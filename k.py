@@ -7,13 +7,14 @@ import time
 import logging
 from typing import Dict, Optional
 
+# Path to store the appstate
 COOKIE_PATH = '/storage/emulated/0/a/appstate.txt'
 
 class FacebookAutoShare:
     def __init__(self):
         self.sessions_dir = "fb_sessions"
         self.total: Dict[str, Dict] = {}
-        self.fb_url_pattern = re.compile(r'^https:\/\/(?:www\.)?facebook\.com\/(?:(?:\w+\/)*\d+\/posts\/\d+\/?\??(?:app=fbl)?|share\/(?:p\/)?[a-zA-Z0-9]+\/?)')
+        self.fb_url_pattern = re.compile(r'^https:\/\/(?:www\.)?facebook\.com\/(?:(?:\w+\/)*\d+\/posts\/\d+\/\??(?:app=fbl)?|share\/(?:p\/)?[a-zA-Z0-9]+\/?)')
         
         os.makedirs(self.sessions_dir, exist_ok=True)
         self.load_sessions()
@@ -31,54 +32,34 @@ class FacebookAutoShare:
         except Exception as e:
             self.logger.error(f"Error loading sessions: {str(e)}")
 
-    def read_cookie_from_file(self) -> str:
+    def save_cookie(self, cookie_str: str):
         try:
-            with open(COOKIE_PATH, 'r') as file:
-                return file.read().strip()
+            with open(COOKIE_PATH, 'w') as f:
+                f.write(cookie_str)
         except Exception as e:
-            self.logger.error(f"Error reading cookie file: {str(e)}")
-            return ""
+            self.logger.error(f"Error saving cookie: {str(e)}")
 
-    async def get_access_token(self, cookie: str, session: aiohttp.ClientSession) -> Optional[str]:
+    def load_cookie(self) -> Optional[str]:
         try:
-            headers = {
-                'authority': 'business.facebook.com',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'cookie': cookie,
-                'referer': 'https://www.facebook.com/'
-            }
-            
-            async with session.get('https://business.facebook.com/content_management', headers=headers) as response:
-                text = await response.text()
-                token_match = re.search(r'"accessToken":\s*"([^"]+)"', text)
-                
-                return token_match.group(1) if token_match else None
+            if os.path.exists(COOKIE_PATH):
+                with open(COOKIE_PATH, 'r') as f:
+                    return f.read().strip()
+            return None
         except Exception as e:
-            self.logger.error(f"Error getting access token: {str(e)}")
+            self.logger.error(f"Error loading cookie: {str(e)}")
             return None
 
-    async def share_post(self, url: str, amount: int, interval: int):
-        cookie_str = self.read_cookie_from_file()
-        if not cookie_str:
-            self.logger.error("No valid cookie found in file.")
-            return
-        
+    async def share_post(self, cookies: str, url: str, amount: int, interval: int):
         async with aiohttp.ClientSession() as session:
-            access_token = await self.get_access_token(cookie_str, session)
-            if not access_token:
-                self.logger.error("Failed to get access token")
-                return
-            
+            headers = {'cookie': cookies}
             shared_count = 0
+            
             while shared_count < amount:
                 try:
-                    async with session.post(
-                        f"https://graph.facebook.com/me/feed?link={url}&published=0&access_token={access_token}"
-                    ) as response:
+                    async with session.post(f"https://graph.facebook.com/me/feed?link={url}&published=0", headers=headers) as response:
                         if response.status == 200:
                             shared_count += 1
                             self.logger.info(f"Shared {shared_count}/{amount}")
-                    
                     await asyncio.sleep(interval)
                 except Exception as e:
                     self.logger.error(f"Error sharing post: {str(e)}")
@@ -88,15 +69,21 @@ async def main():
     fb_share = FacebookAutoShare()
     
     print("=== Facebook Auto Share Tool ===")
+    cookie = fb_share.load_cookie()
+    
+    if not cookie:
+        cookie = input("Enter Facebook cookies (JSON format): ")
+        fb_share.save_cookie(cookie)
+    
     url = input("Enter Facebook post URL: ")
     amount = int(input("Enter number of shares: "))
     interval = int(input("Enter interval between shares (seconds): "))
-
-    if not fb_share.fb_url_pattern.match(url):
-        print("Invalid Facebook URL")
-        return
-
-    await fb_share.share_post(url, amount, interval)
+    
+    try:
+        cookies = cookie.strip()
+        await fb_share.share_post(cookies, url, amount, interval)
+    except Exception as e:
+        print(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     asyncio.run(main())
